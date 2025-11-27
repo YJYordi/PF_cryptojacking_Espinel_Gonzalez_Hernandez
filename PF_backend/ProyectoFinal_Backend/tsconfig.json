@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "module": "commonjs",
+    "target": "ES2020",
+    "strict": true,
+
+    /* Necesario para Zod, Express, Morgan, etc */
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+
+    /* NestJS */
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+
+    /* Config de tu proyecto */
+    "strictPropertyInitialization": false,
+    "rootDir": "src",
+    "outDir": "dist",
+
+    /* Para que Nest no moleste con imports */
+    "moduleResolution": "node",
+    "resolveJsonModule": true,
+    "skipLibCheck": true
+  },
+  "include": ["src"],
+  "exclude": ["node_modules", "dist"]
+}

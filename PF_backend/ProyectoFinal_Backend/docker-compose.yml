@@ -1,0 +1,36 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_DB: ids
+    ports: ["5432:5432"]
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  nats:
+    image: nats:2
+    ports: ["4222:4222","8222:8222"]
+
+  app:
+    build:
+      context: ..
+      dockerfile: ProyectoFinal_Backend/Dockerfile
+    command: sh -c "npx prisma migrate deploy || true; npm run prisma:seed || true; node dist/server.js"
+    env_file: [.env]
+    depends_on: [db, nats]
+    ports: ["8080:8080"]
+    restart: unless-stopped
+
+  detector:
+    build:
+      context: ..
+      dockerfile: ProyectoFinal_Backend/Dockerfile
+    command: node dist/main.worker.js
+    env_file: [.env]
+    depends_on: [nats, db]
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

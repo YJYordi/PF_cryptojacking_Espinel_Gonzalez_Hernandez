@@ -1,0 +1,98 @@
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Host {
+  id        String   @id
+  name      String
+  labels    Json
+  createdAt DateTime @default(now())
+  lastSeen  DateTime @default(now()) // ← NECESARIO
+
+  events Event[]
+  flows  Flow[]
+}
+
+model Flow {
+  id        String    @id @default(cuid())
+  hostId    String
+  fiveTuple String
+  sni       String?
+  ja3       String?
+  tsStart   DateTime
+  tsEnd     DateTime?
+  bytesIn   Int       @default(0)
+  bytesOut  Int       @default(0)
+  features  Feature?
+  scores    Score[]
+  host      Host      @relation(fields: [hostId], references: [id])
+
+  @@index([hostId, tsStart])
+  @@index([sni])
+  @@index([ja3])
+}
+
+model Feature {
+  flowId String @id
+  v      Json
+  Flow   Flow   @relation(fields: [flowId], references: [id])
+}
+
+model Score {
+  id        String   @id @default(cuid())
+  flowId    String
+  model     String
+  score     Float
+  version   String   @default("1")
+  createdAt DateTime @default(now())
+  Flow      Flow     @relation(fields: [flowId], references: [id])
+
+  @@index([flowId, createdAt])
+}
+
+model Event {
+  id      String   @id @default(cuid())
+  hostId  String
+  kind    String
+  payload Json
+  ts      DateTime @default(now())
+  Host    Host     @relation(fields: [hostId], references: [id])
+
+  alerts Alert[]
+
+  @@index([hostId, ts])
+}
+
+model Rule {
+  id          String   @id @default(cuid())
+  type        String
+  pattern     String
+  description String?
+  enabled     Boolean  @default(true)
+  tags        String[]
+  createdAt   DateTime @default(now())
+
+  // Campos usados por el backend
+  vendor String?
+  sid    Int?
+  name   String?
+  body   String?
+  @@unique([type, pattern], name: "type_pattern")
+}
+
+model Alert {
+  id      String @id
+  eventId String
+  event   Event  @relation(fields: [eventId], references: [id])
+
+  severity  String
+  reason    Json
+  createdAt DateTime @default(now())
+}
