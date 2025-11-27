@@ -10,4 +10,16 @@ export class EventEntity {
   getSni(): string | undefined {
     return (this.payload as any)?.tls?.sni;
   }
+
+  getDnsRrname(): string | undefined {
+    return (this.payload as any)?.dns?.rrname;
+  }
+
+  getHttpHostname(): string | undefined {
+    return (this.payload as any)?.http?.hostname;
+  }
+
+  getHttpUrl(): string | undefined {
+    return (this.payload as any)?.http?.url;
+  }
 }
