@@ -19,8 +19,13 @@ services:
       dockerfile: ProyectoFinal_Backend/Dockerfile
     command: sh -c "npx prisma migrate deploy || true; npm run prisma:seed || true; node dist/server.js"
     env_file: [.env]
+    environment:
+      - EVE_JSON_PATH=${EVE_JSON_PATH:-/var/log/suricata/eve.json}
     depends_on: [db, nats]
     ports: ["8080:8080"]
+    volumes:
+      # Volumen compartido para eve.json (mismo que ml-pipeline)
+      - suricata_logs:/var/log/suricata
     restart: unless-stopped
 
   detector:
@@ -37,13 +42,12 @@ services:
       context: ../../modelo_ML
       dockerfile: Dockerfile
     environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - BACKEND_URL=http://app:8080
       - EVE_JSON_PATH=${EVE_JSON_PATH:-/var/log/suricata/eve.json}
       - INTERVAL_SECONDS=${ML_INTERVAL_SECONDS:-10}
     volumes:
-      # Volumen para compartir eve.json con Suricata (si está en otro contenedor)
-      - suricata_logs:/var/log/suricata:ro
+      # Volumen para compartir eve.json con Suricata y el backend
+      - suricata_logs:/var/log/suricata
       # Montar modelos desde el host (los modelos entrenados deben estar aquí)
       - ../../modelo_ML/models:/app/models:ro
       # Montar dataset desde el host (opcional, para referencia)

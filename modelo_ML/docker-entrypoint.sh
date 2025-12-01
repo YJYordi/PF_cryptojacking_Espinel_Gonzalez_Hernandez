@@ -41,11 +41,8 @@ fi
 echo "[INFO] ✅ Modelos encontrados:"
 ls -lh models/*.pkl 2>/dev/null || echo "  (no se pudieron listar)"
 
-# Verificar API key de OpenAI
-if [ -z "$OPENAI_API_KEY" ]; then
-    echo "[WARNING] OPENAI_API_KEY no está configurada"
-    echo "[WARNING] La generación de reglas no funcionará sin la API key"
-fi
+# El analizador de eventos EVE no requiere API key externa
+echo "[INFO] ✅ Analizador de eventos EVE configurado (no requiere API key externa)"
 
 echo "[INFO] Iniciando pipeline de monitoreo..."
 echo "=========================================="

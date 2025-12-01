@@ -43,34 +43,65 @@ simulate_network() {
     local target_ip=$2
     local target_port=$3
     
-    echo -e "${BLUE}[INFO]${NC} Simulando tráfico de red..."
-    echo -e "  Target: ${target_ip}:${target_port}"
+    echo -e "${BLUE}[INFO]${NC} Simulando tráfico de red (XMRig minando)..."
+    echo -e "  Target: ${target_ip}:${target_port} (simulando pool de minería)"
     echo -e "  Duración: ${duration} segundos"
+    echo -e "  ${YELLOW}NOTA:${NC} Generando eventos realistas de XMRig (login, job, submit, result)"
+    echo -e "  ${YELLOW}NOTA:${NC} Los eventos se escribirán en eve.json como eventos de Suricata"
     echo ""
     
-    docker compose exec ml-pipeline python3 -c "
+    docker compose exec -T ml-pipeline python3 -c "
 import time
 import socket
 import random
+import json
+import os
+from datetime import datetime
 
 target_ip = '${target_ip}'
 target_port = ${target_port}
 duration = ${duration}
+eve_json_path = '/var/log/suricata/eve.json'
 start_time = time.time()
 connection_count = 0
 
-print('Iniciando simulación de tráfico de red...')
+# Crear directorio si no existe
+eve_dir = os.path.dirname(eve_json_path)
+if eve_dir and not os.path.exists(eve_dir):
+    os.makedirs(eve_dir, exist_ok=True)
+
+# Crear archivo si no existe
+if not os.path.exists(eve_json_path):
+    with open(eve_json_path, 'w') as f:
+        pass
+
+print('Iniciando simulación de tráfico de red (XMRig minando)...')
+print('Simulando protocolo Stratum: login -> job -> submit -> result')
+print(f'Eventos se escribirán en: {eve_json_path}')
+
+event_counter = 0
+# Generar eventos cada segundo aproximadamente, independientemente de si las conexiones funcionan
+last_event_time = start_time
+event_interval = 1.0  # Generar evento cada 1 segundo
+
 while time.time() - start_time < duration:
+    current_time_elapsed = time.time() - start_time
+    
+    # Intentar conexión (puede fallar, no importa)
+    connection_attempted = False
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(1)
+        sock.settimeout(0.5)  # Timeout más corto
         try:
             sock.connect((target_ip, target_port))
             connection_count += 1
+            connection_attempted = True
             
-            # Enviar más datos para generar más tráfico
-            data = b'X' * random.randint(1000, 5000)  # Más datos
+            # Generar datos aleatorios
+            data_size = random.randint(1000, 5000)
+            data = b'X' * data_size
             sock.send(data)
+            
             # Enviar múltiples veces
             for _ in range(3):
                 sock.send(b'Y' * random.randint(500, 2000))
@@ -82,13 +113,209 @@ while time.time() - start_time < duration:
                 pass
             
             sock.close()
-        except (socket.error, OSError):
+        except (socket.error, OSError, ConnectionRefusedError, socket.timeout):
+            # La conexión falló, pero aún así generamos eventos
             pass
-        time.sleep(0.1)
     except Exception as e:
-        time.sleep(0.5)
+        pass
+    
+    # Generar eventos periódicamente (cada segundo) independientemente de las conexiones
+    if time.time() - last_event_time >= event_interval:
+        event_counter += 1
+        last_event_time = time.time()
+        
+        # Escribir eventos en eve.json simulando XMRig minando
+        current_time = datetime.now().isoformat()
+        src_port = random.randint(50000, 60000)
+        
+        # Simular diferentes fases del protocolo de minería XMRig/Stratum
+        phase = event_counter % 4
+        
+        if phase == 0:
+            # Fase 1: Login/Subscribe (conexión inicial al pool)
+            login_event = {
+                'timestamp': current_time,
+                'event_type': 'http',
+                'src_ip': '192.168.100.10',  # IP víctima
+                'src_port': src_port,
+                'dest_ip': target_ip,
+                'dest_port': target_port,
+                'proto': 'TCP',
+                'http': {
+                    'hostname': 'pool.minexmr.com',
+                    'url': '/',
+                    'http_user_agent': 'XMRig/6.21.0',
+                    'http_method': 'POST',
+                    'status': 200,
+                    'length': 256,
+                    'http_content_type': 'application/json'
+                },
+                'tx_id': event_counter
+            }
+            
+            # Evento de flujo asociado
+            flow_event = {
+                'timestamp': current_time,
+                'event_type': 'flow',
+                'src_ip': '192.168.100.10',
+                'src_port': src_port,
+                'dest_ip': target_ip,
+                'dest_port': target_port,
+                'proto': 'TCP',
+                'flow_id': 1000000 + event_counter,
+                'app_proto': 'http',
+                'flow': {
+                    'pkts_toserver': 3,
+                    'pkts_toclient': 2,
+                    'bytes_toserver': 256,
+                    'bytes_toclient': 512,
+                    'start': current_time
+                }
+            }
+            
+            with open(eve_json_path, 'a') as f:
+                f.write(json.dumps(login_event) + '\n')
+                f.write(json.dumps(flow_event) + '\n')
+                
+        elif phase == 1:
+            # Fase 2: Job recibido (pool envía trabajo)
+            job_event = {
+                    'timestamp': current_time,
+                    'event_type': 'http',
+                    'src_ip': target_ip,
+                    'src_port': target_port,
+                    'dest_ip': '192.168.100.10',
+                    'dest_port': src_port,
+                    'proto': 'TCP',
+                    'http': {
+                        'hostname': 'pool.minexmr.com',
+                        'url': '/job',
+                        'http_method': 'POST',
+                        'status': 200,
+                        'length': 1024,
+                        'http_content_type': 'application/json'
+                    },
+                    'tx_id': event_counter
+                }
+                
+            flow_event = {
+                'timestamp': current_time,
+                'event_type': 'flow',
+                'src_ip': '192.168.100.10',
+                'src_port': src_port,
+                'dest_ip': target_ip,
+                'dest_port': target_port,
+                'proto': 'TCP',
+                'flow_id': 1000000 + event_counter,
+                'app_proto': 'http',
+                'flow': {
+                    'pkts_toserver': 1,
+                    'pkts_toclient': 2,
+                    'bytes_toserver': 128,
+                    'bytes_toclient': 1024,
+                    'start': current_time
+                }
+            }
+            
+            with open(eve_json_path, 'a') as f:
+                f.write(json.dumps(job_event) + '\n')
+                f.write(json.dumps(flow_event) + '\n')
+                
+        elif phase == 2:
+            # Fase 3: Submit (minero envía resultado)
+            submit_event = {
+                    'timestamp': current_time,
+                    'event_type': 'http',
+                    'src_ip': '192.168.100.10',
+                    'src_port': src_port,
+                    'dest_ip': target_ip,
+                    'dest_port': target_port,
+                    'proto': 'TCP',
+                    'http': {
+                        'hostname': 'pool.minexmr.com',
+                        'url': '/submit',
+                        'http_user_agent': 'XMRig/6.21.0',
+                        'http_method': 'POST',
+                        'status': 200,
+                        'length': 384,
+                        'http_content_type': 'application/json'
+                    },
+                    'tx_id': event_counter
+                }
+                
+            flow_event = {
+                'timestamp': current_time,
+                'event_type': 'flow',
+                'src_ip': '192.168.100.10',
+                'src_port': src_port,
+                'dest_ip': target_ip,
+                'dest_port': target_port,
+                'proto': 'TCP',
+                'flow_id': 1000000 + event_counter,
+                'app_proto': 'http',
+                'flow': {
+                    'pkts_toserver': 2,
+                    'pkts_toclient': 1,
+                    'bytes_toserver': 384,
+                    'bytes_toclient': 128,
+                    'start': current_time
+                }
+            }
+            
+            with open(eve_json_path, 'a') as f:
+                f.write(json.dumps(submit_event) + '\n')
+                f.write(json.dumps(flow_event) + '\n')
+                
+        else:
+            # Fase 4: Result/Accept (pool confirma resultado)
+            result_event = {
+                    'timestamp': current_time,
+                    'event_type': 'http',
+                    'src_ip': target_ip,
+                    'src_port': target_port,
+                    'dest_ip': '192.168.100.10',
+                    'dest_port': src_port,
+                    'proto': 'TCP',
+                    'http': {
+                        'hostname': 'pool.minexmr.com',
+                        'url': '/result',
+                        'http_method': 'POST',
+                        'status': 200,
+                        'length': 192,
+                        'http_content_type': 'application/json'
+                    },
+                    'tx_id': event_counter
+                }
+                
+            flow_event = {
+                'timestamp': current_time,
+                'event_type': 'flow',
+                'src_ip': '192.168.100.10',
+                'src_port': src_port,
+                'dest_ip': target_ip,
+                'dest_port': target_port,
+                'proto': 'TCP',
+                'flow_id': 1000000 + event_counter,
+                'app_proto': 'http',
+                'flow': {
+                    'pkts_toserver': 1,
+                    'pkts_toclient': 1,
+                    'bytes_toserver': 64,
+                    'bytes_toclient': 192,
+                    'start': current_time
+                }
+            }
+            
+            with open(eve_json_path, 'a') as f:
+                f.write(json.dumps(result_event) + '\n')
+                f.write(json.dumps(flow_event) + '\n')
+    
+    # Pequeña pausa para no saturar
+    time.sleep(0.1)
 
-print(f'Simulación completada: {connection_count} conexiones')
+print(f'Simulación completada: {connection_count} conexiones exitosas')
+print(f'Eventos generados y escritos en eve.json: {event_counter}')
+print(f'Nota: Los eventos se generan periódicamente incluso si las conexiones fallan')
 "
 }
 
@@ -100,7 +327,7 @@ simulate_cpu() {
     echo -e "  ${YELLOW}OBJETIVO:${NC} CPU ~90% | RAM ~90%"
     echo ""
     
-    docker compose exec ml-pipeline python3 -c "
+    docker compose exec -T ml-pipeline python3 -c "
 import multiprocessing
 import time
 import sys

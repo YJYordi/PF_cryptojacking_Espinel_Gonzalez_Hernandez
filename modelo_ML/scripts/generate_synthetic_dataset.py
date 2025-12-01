@@ -5,7 +5,7 @@ Simula comportamientos de sistema normal, con carga legítima, y con XMRig minan
 """
 
 import pandas as pd  # type: ignore
-import numpy as np
+import numpy as np  # type: ignore
 import random
 from datetime import datetime, timedelta
 import csv

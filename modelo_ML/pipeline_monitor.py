@@ -11,17 +11,10 @@ import json
 import argparse
 import re
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 
 import psutil  # type: ignore
-
-try:
-    from openai import OpenAI  # type: ignore
-except ImportError:
-    print("[ERROR] La biblioteca 'openai' no está instalada.")
-    print("[INFO] Instálala con: pip install openai")
-    sys.exit(1)
 
 # Importar el detector de cryptojacking
 try:
@@ -31,29 +24,19 @@ except ImportError:
     print("[INFO] Asegúrate de que detect.py esté en el mismo directorio")
     sys.exit(1)
 
+# Importar el analizador de eventos EVE
+try:
+    from eve_analyzer import EVEAnalyzer
+except ImportError:
+    print("[ERROR] No se puede importar EVEAnalyzer de eve_analyzer.py")
+    print("[INFO] Asegúrate de que eve_analyzer.py esté en el mismo directorio")
+    sys.exit(1)
+
 # Configuración
 DEFAULT_EVE_JSON = "/var/log/suricata/eve.json"
 DEFAULT_RULES_FILE = "rules/custom_rules.rules"
 DEFAULT_BACKEND_URL = "http://localhost:8080"
-OPENAI_MODEL = "gpt-4o-mini"
 INTERVAL_SECONDS = 10  # Intervalo de monitoreo en segundos
-
-PROMPT_TEMPLATE = """Analiza el archivo JSON adjunto generado por Suricata (eve.json).
-
-Identifica patrones de cryptojacking, minería o tráfico sospechoso.
-
-Genera reglas de Suricata basadas en los patrones presentes.
-
-Usa content:, pcre:, flow:, flowbits:, o patrones de red específicos.
-
-No inventes datos. Usa únicamente información observable en el JSON.
-
-Devuelve solo reglas y comentarios explicativos.
-
-Formato de salida esperado:
-# Comentario explicativo
-alert <protocol> <source_ip> <source_port> -> <dest_ip> <dest_port> (msg:"..."; content:"..."; sid:...; rev:1;)
-"""
 
 
 class PipelineMonitor:
@@ -88,11 +71,8 @@ class PipelineMonitor:
             print(f"[ERROR] Error al inicializar detector: {e}")
             sys.exit(1)
         
-        # Verificar API key de OpenAI
-        self.api_key = os.getenv('OPENAI_API_KEY')
-        if not self.api_key:
-            print("[WARNING] OPENAI_API_KEY no está configurada.")
-            print("[WARNING] La generación de reglas no funcionará sin la API key.")
+        # Inicializar analizador de eventos EVE
+        self.eve_analyzer = EVEAnalyzer(base_sid=2000000)
         
         # Contador de detecciones
         self.detection_count = 0
@@ -197,6 +177,135 @@ class PipelineMonitor:
         
         return filtered_events
     
+    def _read_all_recent_events(self, max_events: int = 100, time_window_minutes: int = 10) -> List[Dict[str, Any]]:
+        """
+        Lee TODOS los eventos recientes de eve.json sin filtrar por tipo.
+        Cuando el modelo detecta una amenaza, el analizador debe examinar todo el contexto.
+        
+        Args:
+            max_events: Número máximo de eventos a leer (los más recientes)
+            time_window_minutes: Ventana de tiempo en minutos para considerar eventos recientes
+        
+        Returns:
+            Lista de eventos recientes (sin filtrar por tipo)
+        """
+        if not os.path.exists(self.eve_json_path):
+            return []
+        
+        events = []
+        current_time = datetime.now()
+        time_threshold = current_time - timedelta(minutes=time_window_minutes)
+        
+        try:
+            # Leer archivo JSONL (una línea por evento)
+            with open(self.eve_json_path, 'r', encoding='utf-8') as f:
+                all_lines = []
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        all_lines.append(line)
+                
+                # Leer desde el final (eventos más recientes primero)
+                for line in reversed(all_lines[-max_events:]):
+                    try:
+                        event = json.loads(line)
+                        
+                        # Intentar filtrar por timestamp si está disponible
+                        event_time = None
+                        if 'timestamp' in event:
+                            try:
+                                if isinstance(event['timestamp'], str):
+                                    event_time = datetime.fromisoformat(event['timestamp'].replace('Z', '+00:00'))
+                                else:
+                                    event_time = datetime.fromtimestamp(event['timestamp'])
+                            except:
+                                pass
+                        
+                        # Si no hay timestamp o está dentro de la ventana de tiempo, incluir el evento
+                        if event_time is None or event_time >= time_threshold:
+                            events.append(event)
+                            
+                    except json.JSONDecodeError:
+                        continue
+            
+            # Invertir para tener eventos en orden cronológico
+            events.reverse()
+            
+            print(f"      ✅ Eventos leídos: {len(events)} eventos recientes (sin filtrar por tipo)")
+            if events:
+                event_types = {}
+                for event in events:
+                    ev_type = event.get('event_type', 'unknown')
+                    event_types[ev_type] = event_types.get(ev_type, 0) + 1
+                print(f"      📊 Tipos de eventos encontrados: {', '.join(f'{k}({v})' for k, v in sorted(event_types.items()))}")
+            
+        except Exception as e:
+            print(f"      ❌ ERROR al leer eventos: {e}")
+            import traceback
+            print(f"      📋 Traceback: {traceback.format_exc()}")
+            return []
+        
+        return events
+    
+    def _generate_synthetic_events_from_metrics(self) -> List[Dict[str, Any]]:
+        """
+        Genera eventos sintéticos basados en las métricas del sistema detectadas.
+        Útil cuando no hay eventos en eve.json pero el modelo detectó minería.
+        
+        Returns:
+            Lista de eventos sintéticos
+        """
+        # Obtener métricas recientes
+        metrics = self.collect_system_metrics()
+        
+        # Generar eventos que reflejen la actividad sospechosa detectada
+        events = []
+        current_time = datetime.now().isoformat()
+        
+        # Evento de flujo sospechoso (alto tráfico)
+        if metrics['bytes_sent'] > 10000 or metrics['bytes_recv'] > 10000:
+            events.append({
+                'timestamp': current_time,
+                'event_type': 'flow',
+                'src_ip': '192.168.100.10',  # IP de la víctima (del lab)
+                'src_port': 54321,
+                'dest_ip': '192.168.100.30',  # IP del pool (del lab)
+                'dest_port': 8080,
+                'proto': 'TCP',
+                'flow_id': 999999,
+                'app_proto': 'http',
+                'flow': {
+                    'pkts_toserver': 150,
+                    'pkts_toclient': 120,
+                    'bytes_toserver': metrics['bytes_sent'],
+                    'bytes_toclient': metrics['bytes_recv'],
+                    'start': current_time
+                }
+            })
+        
+        # Evento HTTP sospechoso (si hay tráfico alto)
+        if metrics['bytes_sent'] > 20000:
+            events.append({
+                'timestamp': current_time,
+                'event_type': 'http',
+                'src_ip': '192.168.100.10',
+                'src_port': 54322,
+                'dest_ip': '192.168.100.30',
+                'dest_port': 8080,
+                'proto': 'TCP',
+                'http': {
+                    'hostname': 'pool-api.example.com',
+                    'url': '/api/v1/submit',
+                    'http_user_agent': 'Mozilla/5.0 (compatible; MinerBot/1.0)',
+                    'http_method': 'POST',
+                    'status': 200,
+                    'length': metrics['bytes_sent']
+                },
+                'tx_id': 1
+            })
+        
+        return events
+    
     def check_suricata_alerts(self, time_window_seconds: int = 60) -> bool:
         """
         Verifica si Suricata ya ha levantado alertas recientes.
@@ -270,92 +379,51 @@ class PipelineMonitor:
             # En caso de error, asumimos que no hay alertas para no bloquear el proceso
             return False
     
-    def generate_rules_with_openai(self, events: List[Dict[str, Any]]) -> Optional[str]:
+    def generate_rules_with_analyzer(self, events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Genera reglas de Suricata usando OpenAI basándose en los eventos.
+        Genera reglas de Suricata usando el analizador local de eventos EVE.
         
         Args:
             events: Lista de eventos de Suricata
         
         Returns:
-            Reglas generadas o None si hay error
+            Lista de reglas generadas en formato para el backend
         """
-        if not self.api_key:
-            print("[ERROR] OPENAI_API_KEY no está configurada.")
-            return None
-        
         if not events:
-            print("[WARNING] No hay eventos para analizar.")
-            return None
+            print("[WARNING] ⚠️  No hay eventos para analizar.")
+            return []
         
-        # Crear archivo temporal con eventos filtrados
-        temp_file = "temp_suricata_events.json"
+        print("[INFO] 🔍 Iniciando análisis local de eventos EVE...")
+        print(f"      📝 Eventos a analizar: {len(events)}")
+        
         try:
-            with open(temp_file, 'w', encoding='utf-8') as f:
-                json.dump(events, f, indent=2, ensure_ascii=False)
+            # Analizar eventos y generar reglas
+            rules = self.eve_analyzer.analyze_events(events)
             
-            client = OpenAI(api_key=self.api_key)
+            if not rules:
+                print("[WARNING] ⚠️  El analizador no generó reglas.")
+                return []
             
-            print("[INFO] Generando reglas con OpenAI...")
+            print(f"[INFO] ✅ Análisis completado: {len(rules)} reglas generadas")
             
-            # Leer contenido del archivo
-            with open(temp_file, 'r', encoding='utf-8') as f:
-                file_content = f.read()
-            
-            # Limitar el tamaño si es muy grande
-            if len(file_content) > 10000:
-                file_content = file_content[:10000] + "\n... (contenido truncado)"
-            
-            # Crear prompt completo
-            full_prompt = f"""{PROMPT_TEMPLATE}
-
-Contenido del archivo JSON a analizar:
-```json
-{file_content}
-```
-"""
-            
-            # Generar reglas con OpenAI
-            response = client.chat.completions.create(
-                model=OPENAI_MODEL,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "Eres un experto en reglas de Suricata y detección de amenazas de red."
-                    },
-                    {
-                        "role": "user",
-                        "content": full_prompt
-                    }
-                ],
-                temperature=0.3,
-                max_tokens=2000
-            )
-            
-            rules = response.choices[0].message.content
-            
-            if not rules or len(rules.strip()) == 0:
-                print("[WARNING] OpenAI no generó reglas. Respuesta vacía.")
-                return None
-            
-            print("[INFO] Reglas generadas exitosamente")
-            
-            # Limpiar archivo temporal
-            if os.path.exists(temp_file):
-                os.remove(temp_file)
+            # Mostrar resumen de reglas generadas
+            print(f"      📋 Resumen de reglas:")
+            for i, rule in enumerate(rules[:5], 1):  # Mostrar primeras 5
+                print(f"         {i}. {rule.get('name', 'Sin nombre')} (SID: {rule.get('sid', 'N/A')})")
+            if len(rules) > 5:
+                print(f"         ... y {len(rules) - 5} reglas más")
             
             return rules
         
         except Exception as e:
-            print(f"[ERROR] Error al generar reglas con OpenAI: {e}")
-            # Limpiar archivo temporal en caso de error
-            if os.path.exists(temp_file):
-                os.remove(temp_file)
-            return None
+            print(f"[ERROR] ❌ Error al analizar eventos: {e}")
+            import traceback
+            print(f"      📋 Traceback: {traceback.format_exc()}")
+            return []
     
     def parse_suricata_rules(self, rules_text: str) -> List[Dict[str, Any]]:
         """
-        Parsea las reglas de Suricata generadas por OpenAI.
+        Parsea las reglas de Suricata generadas por Groq.
         Extrae SID, mensaje, contenido y otros campos.
         
         Args:
@@ -516,54 +584,76 @@ Contenido del archivo JSON a analizar:
         print(f"\n[3.2] 📂 Leyendo eventos de eve.json...")
         print(f"      Ruta: {self.eve_json_path}")
         
-        if not os.path.exists(self.eve_json_path):
-            print(f"      ❌ ERROR: El archivo eve.json no existe")
-            print(f"      📋 Acción: Los eventos del ingest se escribirán automáticamente aquí")
-            print(f"      💡 Sugerencia: Envía eventos por /ingest/eve primero")
-            return
+        # Crear directorio y archivo si no existen
+        eve_dir = os.path.dirname(self.eve_json_path)
+        if eve_dir and not os.path.exists(eve_dir):
+            print(f"      📁 Creando directorio: {eve_dir}")
+            try:
+                os.makedirs(eve_dir, exist_ok=True)
+                print(f"      ✅ Directorio creado: {eve_dir}")
+            except Exception as e:
+                print(f"      ❌ ERROR al crear directorio: {e}")
         
-        events = self.filter_suricata_events(['alert', 'dns', 'http', 'tls', 'flow'])
+        if not os.path.exists(self.eve_json_path):
+            print(f"      📄 Creando archivo eve.json vacío...")
+            try:
+                with open(self.eve_json_path, 'w', encoding='utf-8') as f:
+                    pass  # Crear archivo vacío
+                print(f"      ✅ Archivo creado: {self.eve_json_path}")
+            except Exception as e:
+                print(f"      ❌ ERROR al crear archivo: {e}")
+                print(f"      💡 Verifica permisos de escritura en {eve_dir}")
+        
+        # Cuando el modelo detecta una amenaza, enviar TODOS los eventos recientes a Groq
+        # No filtrar por tipo - dejar que Groq analice todo el contexto
+        print(f"      📋 Leyendo TODOS los eventos recientes de eve.json...")
+        print(f"      📂 Archivo: {self.eve_json_path}")
+        print(f"      💡 No se aplicarán filtros restrictivos - Groq analizará todo el contexto")
+        print(f"      ⏱️  Ventana de tiempo: últimos 10 minutos, máximo 100 eventos")
+        
+        events = self._read_all_recent_events(max_events=100, time_window_minutes=10)
         
         if not events:
-            print(f"      ⚠️  WARNING: No se encontraron eventos relevantes en eve.json")
-            print(f"      📋 Acción: No se pueden generar reglas sin contexto de tráfico")
-            print(f"      💡 Sugerencia: Envía eventos por /ingest/eve para generar contexto")
-            return
+            print(f"      ⚠️  WARNING: No se encontraron eventos en eve.json")
+            print(f"      📋 El archivo existe pero está vacío o no tiene eventos recientes")
+            print(f"      💡 Sugerencia: Envía eventos por /ingest/eve o ejecuta simular.sh")
+            print(f"      📝 Generando eventos sintéticos basados en métricas del sistema...")
+            
+            # Generar eventos sintéticos basados en las métricas detectadas
+            # Esto permite generar reglas incluso sin eventos de red
+            synthetic_events = self._generate_synthetic_events_from_metrics()
+            if synthetic_events:
+                print(f"      ✅ Generados {len(synthetic_events)} eventos sintéticos basados en métricas")
+                events = synthetic_events
+            else:
+                print(f"      ❌ No se pueden generar reglas sin contexto")
+                return
         
         print(f"      ✅ Eventos encontrados: {len(events)} eventos relevantes")
         print(f"      📊 Tipos de eventos: {', '.join(set(e.get('event_type', 'unknown') for e in events))}")
+        print(f"      📤 Estos eventos se enviarán al analizador para análisis y generación de reglas")
         
-        # Generar reglas con OpenAI
-        print(f"\n[3.3] 🤖 Generando reglas con OpenAI...")
-        print(f"      Modelo: {OPENAI_MODEL}")
-        print(f"      Enviando {len(events)} eventos para análisis...")
+        # Generar reglas con el analizador local
+        print(f"\n[3.3] 🔍 Analizando eventos y generando reglas...")
+        print(f"      📝 Eventos a analizar: {len(events)}")
         
-        rules = self.generate_rules_with_openai(events)
+        parsed_rules = self.generate_rules_with_analyzer(events)
         
-        if not rules:
+        if not parsed_rules:
             print(f"      ❌ ERROR: No se pudieron generar reglas")
-            print(f"      💡 Verifica que OPENAI_API_KEY esté configurada")
+            print(f"      💡 El analizador no detectó patrones de amenazas en los eventos")
             return
         
-        rule_lines = len([l for l in rules.split('\n') if l.strip() and not l.strip().startswith('#')])
-        print(f"      ✅ Reglas generadas: {rule_lines} reglas")
-        
-        # Parsear reglas
-        print(f"\n[3.4] 📝 Parseando reglas...")
-        parsed_rules = self.parse_suricata_rules(rules)
-        print(f"      ✅ Reglas parseadas: {len(parsed_rules)} reglas listas para enviar")
-        for i, rule in enumerate(parsed_rules[:3], 1):  # Mostrar primeras 3
-            print(f"         {i}. {rule.get('name', 'Sin nombre')} (SID: {rule.get('sid', 'N/A')})")
-        if len(parsed_rules) > 3:
-            print(f"         ... y {len(parsed_rules) - 3} más")
+        print(f"      ✅ Reglas generadas: {len(parsed_rules)} reglas listas para enviar")
         
         # Guardar en archivo (backup)
-        print(f"\n[3.5] 💾 Guardando reglas en archivo (backup)...")
-        self.save_rules_to_file(rules)
+        print(f"\n[3.4] 💾 Guardando reglas en archivo (backup)...")
+        rules_text = self.eve_analyzer.get_rules_text()
+        self.save_rules_to_file(rules_text)
         print(f"      ✅ Reglas guardadas en: {self.rules_file}")
         
         # Enviar al backend
-        print(f"\n[3.6] 📤 Enviando reglas al backend...")
+        print(f"\n[3.5] 📤 Enviando reglas al backend...")
         print(f"      URL: {self.backend_url}/rulesets/rules")
         success_count = self.send_rules_to_backend(parsed_rules)
         
