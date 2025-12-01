@@ -1,0 +1,31 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.git/
+.gitignore
+.env
+*.log
+*.tmp
+temp_*
+.DS_Store
+.vscode/
+.idea/
+# Modelos y datos se montan como volúmenes, no se copian
+models/
+data/
+*.rules
+rules/
+# Archivos de documentación innecesarios en la imagen
+*.md
+!README.md
+CHECKLIST_DOCKER.md
+INSTRUCCIONES_DOCKER.md
+DOCKER.md
+

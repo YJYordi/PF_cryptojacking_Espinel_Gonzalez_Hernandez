@@ -32,5 +32,33 @@ services:
     depends_on: [nats, db]
     restart: unless-stopped
 
+  ml-pipeline:
+    build:
+      context: ../..
+      dockerfile: modelo_ML/Dockerfile
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - BACKEND_URL=http://app:8080
+      - EVE_JSON_PATH=${EVE_JSON_PATH:-/var/log/suricata/eve.json}
+      - INTERVAL_SECONDS=${ML_INTERVAL_SECONDS:-10}
+    volumes:
+      # Volumen para compartir eve.json con Suricata (si está en otro contenedor)
+      - suricata_logs:/var/log/suricata:ro
+      # Montar modelos desde el host (los modelos entrenados deben estar aquí)
+      - ../../modelo_ML/models:/app/models:ro
+      # Montar dataset desde el host (opcional, para referencia)
+      - ../../modelo_ML/data:/app/data:ro
+      # Directorio para reglas generadas (se guardan en el contenedor)
+      # Las reglas se envían al backend, este directorio es solo backup
+    depends_on:
+      - app
+    restart: unless-stopped
+    networks:
+      - default
+
 volumes:
   postgres_data:
+  suricata_logs:
+  ml_models:
+  ml_data:
+  ml_rules:
