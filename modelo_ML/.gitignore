@@ -6,6 +6,11 @@ __pycache__/
 .Python
 
 # Modelos y datos
+# PERO permitir modelos entrenados y dataset de entrenamiento (necesarios para el equipo)
+!models/rf_model.pkl
+!models/iso_model.pkl
+!models/scaler.pkl
+!data/dataset.csv
 models/*.pkl
 data/*.csv
 *.rules
