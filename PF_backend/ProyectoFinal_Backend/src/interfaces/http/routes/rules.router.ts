@@ -26,7 +26,7 @@ router.get("/", async (_req, res) => {
 });
 
 router.post('/rules', async (req, res) => {
-  const { vendor, sid, name, body, tags } = req.body;
+  const { vendor, sid, name, body, tags, pattern } = req.body;
 
   const data = {
     vendor,
@@ -36,7 +36,7 @@ router.post('/rules', async (req, res) => {
     tags,
     enabled: true,
     type: 'DOMAIN_IOC',                   // obligatorio en Prisma
-    pattern: name ?? body ?? 'unknown',   // obligatorio en Prisma
+    pattern: pattern ?? name ?? body ?? 'unknown',   // Usar pattern si está presente, sino name o body
   };
 
   const rule = await prisma.rule.create({ data });

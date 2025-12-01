@@ -310,6 +310,7 @@ class EVEAnalyzer:
             'sid': sid,
             'name': f'Cryptojacking: Pool de minería {hostname}',
             'body': rule_body,
+            'pattern': hostname,  # Patrón real para detección (hostname)
             'tags': ['auto-generated', 'cryptojacking', 'mining-pool'],
             'enabled': True
         }
@@ -336,6 +337,7 @@ class EVEAnalyzer:
             'sid': sid,
             'name': f'Cryptojacking: Minero {miner_name} detectado',
             'body': rule_body,
+            'pattern': user_agent,  # Patrón real para detección (user agent completo)
             'tags': ['auto-generated', 'cryptojacking', 'miner-detection'],
             'enabled': True
         }
@@ -361,6 +363,7 @@ class EVEAnalyzer:
             'sid': sid,
             'name': f'Cryptojacking: Endpoint de minería {url}',
             'body': rule_body,
+            'pattern': url,  # Patrón real para detección (URL)
             'tags': ['auto-generated', 'cryptojacking', 'mining-endpoint'],
             'enabled': True
         }
@@ -381,6 +384,7 @@ class EVEAnalyzer:
             'sid': sid,
             'name': f'Cryptojacking: Tráfico sospechoso alto volumen a {dest_ip}:{dest_port}',
             'body': rule_body,
+            'pattern': dest_ip,  # Patrón real para detección (IP de destino)
             'tags': ['auto-generated', 'cryptojacking', 'high-volume'],
             'enabled': True
         }
@@ -397,6 +401,7 @@ class EVEAnalyzer:
             'sid': sid,
             'name': f'Cryptojacking: DNS a pool de minería {rdata}',
             'body': rule_body,
+            'pattern': rdata,  # Patrón real para detección (dominio DNS)
             'tags': ['auto-generated', 'cryptojacking', 'dns-mining'],
             'enabled': True
         }
@@ -416,6 +421,7 @@ class EVEAnalyzer:
             'sid': sid,
             'name': f'Cryptojacking: TLS SNI a pool de minería {sni}',
             'body': rule_body,
+            'pattern': sni,  # Patrón real para detección (SNI)
             'tags': ['auto-generated', 'cryptojacking', 'tls-mining'],
             'enabled': True
         }
@@ -434,6 +440,7 @@ class EVEAnalyzer:
             'sid': sid,
             'name': f'Cryptojacking: IP sospechosa {ip} con {connection_count} conexiones',
             'body': rule_body,
+            'pattern': ip,  # Patrón real para detección (IP sospechosa)
             'tags': ['auto-generated', 'cryptojacking', 'suspicious-ip'],
             'enabled': True
         }
@@ -443,7 +450,7 @@ class EVEAnalyzer:
         Obtiene las reglas generadas en formato de texto para guardar en archivo.
         
         Returns:
-            Texto con todas las reglas generadas
+            Texto con todas las reglas generadas (solo el campo 'body' de cada regla)
         """
         if not self.generated_rules:
             return ""
@@ -455,8 +462,12 @@ class EVEAnalyzer:
         lines.append("")
         
         for rule in self.generated_rules:
-            lines.append(f"# {rule['name']}")
-            lines.append(rule['body'])
+            # Agregar comentario con el nombre de la regla
+            lines.append(f"# {rule.get('name', 'Regla sin nombre')}")
+            # Agregar el cuerpo de la regla (formato Suricata)
+            rule_body = rule.get('body', '')
+            if rule_body:
+                lines.append(rule_body)
             lines.append("")
         
         return "\n".join(lines)

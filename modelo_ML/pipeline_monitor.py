@@ -551,26 +551,27 @@ class PipelineMonitor:
                 return
         
         try:
-            # Extraer solo las reglas (sin comentarios de encabezado)
-            rule_lines = []
-            for line in rules.split('\n'):
-                line = line.strip()
-                # Incluir solo líneas que son reglas (alert, drop, etc.) o comentarios útiles
-                if line and (line.startswith('alert') or line.startswith('drop') or 
-                            line.startswith('pass') or (line.startswith('#') and 'regla' in line.lower())):
-                    rule_lines.append(line)
+            # El texto ya viene formateado correctamente de get_rules_text()
+            # Solo necesitamos agregarlo al archivo
+            if not rules or not rules.strip():
+                print(f"      ⚠️  WARNING: No hay reglas para guardar")
+                return
             
-            if not rule_lines:
-                print(f"      ⚠️  WARNING: No se encontraron reglas válidas para guardar")
+            # Verificar que hay al menos una línea que empiece con 'alert'
+            has_rules = any(line.strip().startswith('alert') for line in rules.split('\n'))
+            if not has_rules:
+                print(f"      ⚠️  WARNING: No se encontraron reglas válidas (alert) para guardar")
                 return
             
             # Agregar las reglas al archivo de Suricata
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             with open(self.suricata_rules_file, 'a', encoding='utf-8') as f:
-                f.write(f"\n# Reglas generadas automáticamente - {timestamp}\n")
+                f.write(f"\n# ========================================\n")
+                f.write(f"# Reglas generadas automáticamente - {timestamp}\n")
                 f.write(f"# Detección #{self.detection_count}\n")
-                f.write("\n".join(rule_lines))
-                f.write("\n\n")
+                f.write(f"# ========================================\n")
+                f.write(rules)
+                f.write("\n")
             
             print(f"[INFO] ✅ Reglas agregadas a {self.suricata_rules_file}")
             

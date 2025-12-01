@@ -22,4 +22,8 @@ export class EventEntity {
   getHttpUrl(): string | undefined {
     return (this.payload as any)?.http?.url;
   }
+
+  getHttpUserAgent(): string | undefined {
+    return (this.payload as any)?.http?.http_user_agent;
+  }
 }

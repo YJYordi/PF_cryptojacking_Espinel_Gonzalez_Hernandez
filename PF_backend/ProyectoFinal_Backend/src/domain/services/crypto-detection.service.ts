@@ -8,6 +8,7 @@ export class CryptoDetectionService {
     const dnsRrname = event.getDnsRrname();
     const httpHostname = event.getHttpHostname();
     const httpUrl = event.getHttpUrl();
+    const httpUserAgent = event.getHttpUserAgent();
 
     for (const r of rules.filter(r => r.enabled)) {
       if (r.type === 'DOMAIN_IOC') {
@@ -29,6 +30,11 @@ export class CryptoDetectionService {
         // Detectar en HTTP URL
         if (httpUrl && httpUrl.toLowerCase().includes(r.pattern.toLowerCase())) {
           hits.push(`HTTP URL IOC match: ${r.pattern}`);
+        }
+        
+        // Detectar en HTTP User Agent
+        if (httpUserAgent && httpUserAgent.toLowerCase().includes(r.pattern.toLowerCase())) {
+          hits.push(`HTTP User Agent IOC match: ${r.pattern}`);
         }
       }
       // aquí puedes extender: JA3, PROCESS, THRESHOLD...

@@ -48,6 +48,7 @@ simulate_network() {
     echo -e "  Duración: ${duration} segundos"
     echo -e "  ${YELLOW}NOTA:${NC} Generando eventos realistas de XMRig (login, job, submit, result)"
     echo -e "  ${YELLOW}NOTA:${NC} Los eventos se escribirán en eve.json como eventos de Suricata"
+    echo -e "  ${GREEN}OBJETIVO:${NC} Generar eventos detectables por el analizador EVE"
     echo ""
     
     docker compose exec -T ml-pipeline python3 -c "
@@ -80,9 +81,12 @@ print('Simulando protocolo Stratum: login -> job -> submit -> result')
 print(f'Eventos se escribirán en: {eve_json_path}')
 
 event_counter = 0
-# Generar eventos cada segundo aproximadamente, independientemente de si las conexiones funcionan
+# Generar eventos con menor frecuencia para no crear demasiadas reglas
+# Generar solo 5-10 eventos durante toda la simulación
 last_event_time = start_time
-event_interval = 1.0  # Generar evento cada 1 segundo
+max_events = min(8, duration // 5)  # Máximo 8 eventos o 1 cada 5 segundos
+event_interval = max(3.0, duration / max_events)  # Espaciar eventos
+print(f'Generando máximo {max_events} eventos (1 cada {event_interval:.1f} segundos)')
 
 while time.time() - start_time < duration:
     current_time_elapsed = time.time() - start_time
@@ -119,21 +123,38 @@ while time.time() - start_time < duration:
     except Exception as e:
         pass
     
-    # Generar eventos periódicamente (cada segundo) independientemente de las conexiones
-    if time.time() - last_event_time >= event_interval:
+    # Generar eventos periódicamente (con menor frecuencia) independientemente de las conexiones
+    if event_counter < max_events and time.time() - last_event_time >= event_interval:
         event_counter += 1
         last_event_time = time.time()
+        print(f'Generando evento {event_counter}/{max_events}...')
         
         # Escribir eventos en eve.json simulando XMRig minando
         current_time = datetime.now().isoformat()
         src_port = random.randint(50000, 60000)
         
         # Simular diferentes fases del protocolo de minería XMRig/Stratum
-        phase = event_counter % 4
+        # Usar pools de minería conocidos que el analizador detecte
+        # Usar solo 2-3 pools diferentes para evitar demasiadas reglas
+        mining_pools = [
+            'pool.minexmr.com',
+            'pool.supportxmr.com',
+            'pool.hashvault.pro'
+        ]
+        mining_urls = ['/api/v1/work', '/api/v1/submit', '/stratum']
+        user_agents = ['XMRig/6.21.0', 'xmr-stak/2.10.8']
+        
+        # Usar el mismo pool y user agent para varios eventos para evitar duplicados
+        pool = mining_pools[event_counter % len(mining_pools)]
+        url = mining_urls[event_counter % len(mining_urls)]
+        user_agent = user_agents[event_counter % len(user_agents)]
+        
+        # Solo 2 fases principales para reducir eventos
+        phase = event_counter % 2
         
         if phase == 0:
-            # Fase 1: Login/Subscribe (conexión inicial al pool)
-            login_event = {
+            # Fase 1: HTTP con pool de minería y user agent (más detectable)
+            http_event = {
                 'timestamp': current_time,
                 'event_type': 'http',
                 'src_ip': '192.168.100.10',  # IP víctima
@@ -142,18 +163,18 @@ while time.time() - start_time < duration:
                 'dest_port': target_port,
                 'proto': 'TCP',
                 'http': {
-                    'hostname': 'pool.minexmr.com',
-                    'url': '/',
-                    'http_user_agent': 'XMRig/6.21.0',
+                    'hostname': pool,
+                    'url': url,
+                    'http_user_agent': user_agent,
                     'http_method': 'POST',
                     'status': 200,
-                    'length': 256,
+                    'length': random.randint(1000, 5000),
                     'http_content_type': 'application/json'
                 },
                 'tx_id': event_counter
             }
             
-            # Evento de flujo asociado
+            # Evento de flujo asociado con alto volumen (detectable)
             flow_event = {
                 'timestamp': current_time,
                 'event_type': 'flow',
@@ -165,150 +186,63 @@ while time.time() - start_time < duration:
                 'flow_id': 1000000 + event_counter,
                 'app_proto': 'http',
                 'flow': {
-                    'pkts_toserver': 3,
-                    'pkts_toclient': 2,
-                    'bytes_toserver': 256,
-                    'bytes_toclient': 512,
+                    'pkts_toserver': 150,
+                    'pkts_toclient': 120,
+                    'bytes_toserver': random.randint(100000, 500000),  # Alto volumen
+                    'bytes_toclient': random.randint(80000, 400000),
                     'start': current_time
                 }
             }
             
             with open(eve_json_path, 'a') as f:
-                f.write(json.dumps(login_event) + '\n')
-                f.write(json.dumps(flow_event) + '\n')
-                
-        elif phase == 1:
-            # Fase 2: Job recibido (pool envía trabajo)
-            job_event = {
-                    'timestamp': current_time,
-                    'event_type': 'http',
-                    'src_ip': target_ip,
-                    'src_port': target_port,
-                    'dest_ip': '192.168.100.10',
-                    'dest_port': src_port,
-                    'proto': 'TCP',
-                    'http': {
-                        'hostname': 'pool.minexmr.com',
-                        'url': '/job',
-                        'http_method': 'POST',
-                        'status': 200,
-                        'length': 1024,
-                        'http_content_type': 'application/json'
-                    },
-                    'tx_id': event_counter
-                }
-                
-            flow_event = {
-                'timestamp': current_time,
-                'event_type': 'flow',
-                'src_ip': '192.168.100.10',
-                'src_port': src_port,
-                'dest_ip': target_ip,
-                'dest_port': target_port,
-                'proto': 'TCP',
-                'flow_id': 1000000 + event_counter,
-                'app_proto': 'http',
-                'flow': {
-                    'pkts_toserver': 1,
-                    'pkts_toclient': 2,
-                    'bytes_toserver': 128,
-                    'bytes_toclient': 1024,
-                    'start': current_time
-                }
-            }
-            
-            with open(eve_json_path, 'a') as f:
-                f.write(json.dumps(job_event) + '\n')
-                f.write(json.dumps(flow_event) + '\n')
-                
-        elif phase == 2:
-            # Fase 3: Submit (minero envía resultado)
-            submit_event = {
-                    'timestamp': current_time,
-                    'event_type': 'http',
-                    'src_ip': '192.168.100.10',
-                    'src_port': src_port,
-                    'dest_ip': target_ip,
-                    'dest_port': target_port,
-                    'proto': 'TCP',
-                    'http': {
-                        'hostname': 'pool.minexmr.com',
-                        'url': '/submit',
-                        'http_user_agent': 'XMRig/6.21.0',
-                        'http_method': 'POST',
-                        'status': 200,
-                        'length': 384,
-                        'http_content_type': 'application/json'
-                    },
-                    'tx_id': event_counter
-                }
-                
-            flow_event = {
-                'timestamp': current_time,
-                'event_type': 'flow',
-                'src_ip': '192.168.100.10',
-                'src_port': src_port,
-                'dest_ip': target_ip,
-                'dest_port': target_port,
-                'proto': 'TCP',
-                'flow_id': 1000000 + event_counter,
-                'app_proto': 'http',
-                'flow': {
-                    'pkts_toserver': 2,
-                    'pkts_toclient': 1,
-                    'bytes_toserver': 384,
-                    'bytes_toclient': 128,
-                    'start': current_time
-                }
-            }
-            
-            with open(eve_json_path, 'a') as f:
-                f.write(json.dumps(submit_event) + '\n')
+                f.write(json.dumps(http_event) + '\n')
                 f.write(json.dumps(flow_event) + '\n')
                 
         else:
-            # Fase 4: Result/Accept (pool confirma resultado)
-            result_event = {
+            # Fase 2: Agregar eventos DNS y TLS solo ocasionalmente (cada 3 eventos)
+            if event_counter % 3 == 0:
+                # Evento DNS para el pool (detectable por analizador)
+                dns_event = {
                     'timestamp': current_time,
-                    'event_type': 'http',
-                    'src_ip': target_ip,
-                    'src_port': target_port,
-                    'dest_ip': '192.168.100.10',
-                    'dest_port': src_port,
-                    'proto': 'TCP',
-                    'http': {
-                        'hostname': 'pool.minexmr.com',
-                        'url': '/result',
-                        'http_method': 'POST',
-                        'status': 200,
-                        'length': 192,
-                        'http_content_type': 'application/json'
-                    },
-                    'tx_id': event_counter
+                    'event_type': 'dns',
+                    'src_ip': '192.168.100.10',
+                    'src_port': 53,
+                    'dest_ip': '8.8.8.8',
+                    'dest_port': 53,
+                    'proto': 'UDP',
+                    'dns': {
+                        'rrtype': 'A',
+                        'rrname': pool,
+                        'answers': [
+                            {
+                                'rrtype': 'A',
+                                'rrname': pool,
+                                'rdata': target_ip,
+                                'ttl': 300
+                            }
+                        ]
+                    }
                 }
                 
-            flow_event = {
-                'timestamp': current_time,
-                'event_type': 'flow',
-                'src_ip': '192.168.100.10',
-                'src_port': src_port,
-                'dest_ip': target_ip,
-                'dest_port': target_port,
-                'proto': 'TCP',
-                'flow_id': 1000000 + event_counter,
-                'app_proto': 'http',
-                'flow': {
-                    'pkts_toserver': 1,
-                    'pkts_toclient': 1,
-                    'bytes_toserver': 64,
-                    'bytes_toclient': 192,
-                    'start': current_time
+                # Evento TLS con SNI del pool (detectable por analizador)
+                tls_event = {
+                    'timestamp': current_time,
+                    'event_type': 'tls',
+                    'src_ip': '192.168.100.10',
+                    'src_port': src_port,
+                    'dest_ip': target_ip,
+                    'dest_port': 443,
+                    'proto': 'TCP',
+                    'tls': {
+                        'sni': pool,
+                        'version': 'TLS 1.2',
+                        'subject': f'CN={pool}'
+                    }
                 }
-            }
-            
-            with open(eve_json_path, 'a') as f:
-                f.write(json.dumps(result_event) + '\n')
-                f.write(json.dumps(flow_event) + '\n')
+                
+                with open(eve_json_path, 'a') as f:
+                    f.write(json.dumps(dns_event) + '\n')
+                    f.write(json.dumps(tls_event) + '\n')
     
     # Pequeña pausa para no saturar
     time.sleep(0.1)
