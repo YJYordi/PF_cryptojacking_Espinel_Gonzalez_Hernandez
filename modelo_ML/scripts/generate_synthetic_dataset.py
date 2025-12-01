@@ -22,11 +22,11 @@ VICTIM_IP = "192.168.100.10"
 # Cantidad de muestras recomendadas para buen entrenamiento:
 # - Normal: 1000-1500 (comportamiento base del sistema)
 # - Carga legítima: 300-500 (evitar falsos positivos)
-# - Minería: 500-800 (clase de interés, suficiente para aprender patrones)
-# Total recomendado: 1800-2800 muestras
+# - Minería: 800-1200 (clase de interés, MÁS muestras para aprender patrones reales)
+# Total recomendado: 2100-3200 muestras
 SAMPLES_NORMAL = 1200     # Muestras de comportamiento normal
 SAMPLES_LOAD = 400        # Muestras de carga legítima (compilación, video, etc.)
-SAMPLES_MINING = 600      # Muestras de minería con XMRig
+SAMPLES_MINING = 1000     # Muestras de minería con XMRig (AUMENTADO para mejor aprendizaje)
 
 # Semilla para reproducibilidad
 np.random.seed(42)
@@ -171,52 +171,67 @@ def generate_load_sample(timestamp):
 def generate_mining_sample(timestamp):
     """
     Genera una muestra de minería con XMRig con variabilidad realista.
-    Características:
-    - CPU: 70-100% (uso intensivo pero con variabilidad)
-    - RAM: 15-45% (XMRig no usa mucha RAM, pero con variabilidad)
-    - Red: Tráfico variable (no siempre constante)
+    Características REALES basadas en observaciones:
+    - CPU: 80-100% (típicamente 90-100% cuando está minando activamente)
+    - RAM: 20-85% (puede variar mucho, especialmente si hay otros procesos)
+    - Red: Tráfico moderado-alto (comunicación constante con pool)
     - Procesos: xmrig presente, pero ocasionalmente puede no detectarse
     """
-    # CPU con variabilidad (no siempre al 100%)
-    if random.random() < 0.15:  # 15% de casos con CPU más bajo (inicio, pausa, etc.)
-        cpu = np.random.normal(75, 8)  # CPU más bajo ocasionalmente
-        cpu = max(65, min(85, cpu))
-    else:
-        cpu = np.random.normal(88, 10)  # Mayor variabilidad
-        cpu = max(70, min(100, cpu))
+    # CPU: La mayoría del tiempo está muy alto (85-100%)
+    # Casos reales: CPU puede estar al 100% cuando mina activamente
+    # IMPORTANTE: Más casos con CPU 95-100% para que el modelo aprenda
+    if random.random() < 0.08:  # 8% de casos con CPU más bajo (inicio, pausa, throttling)
+        cpu = np.random.normal(82, 6)
+        cpu = max(75, min(90, cpu))
+    elif random.random() < 0.35:  # 35% de casos con CPU muy alto (95-100%) - AUMENTADO
+        cpu = np.random.normal(98, 1.5)
+        cpu = max(95, min(100, cpu))
+    else:  # 57% de casos: CPU alto pero variable (85-98%)
+        cpu = np.random.normal(92, 4)
+        cpu = max(85, min(100, cpu))
     
-    # RAM con más variabilidad
-    ram = np.random.normal(30, 12)  # Mayor desviación
-    ram = max(15, min(45, ram))
+    # RAM: Puede variar mucho dependiendo del sistema
+    # Casos reales: RAM puede estar alta (60-90%) si hay otros procesos
+    # IMPORTANTE: Más casos con RAM alta (70-90%) para casos como el observado
+    if random.random() < 0.25:  # 25% de casos con RAM muy alta (80-90%) - casos extremos
+        ram = np.random.normal(83, 5)
+        ram = max(75, min(90, ram))
+    elif random.random() < 0.30:  # 30% de casos con RAM alta (60-80%) - otros procesos activos
+        ram = np.random.normal(70, 8)
+        ram = max(60, min(85, ram))
+    else:  # 45% de casos: RAM moderada (20-60%) - solo XMRig o pocos procesos
+        ram = np.random.normal(40, 15)
+        ram = max(20, min(65, ram))
     
-    # Tráfico de red variable (no siempre constante)
-    # XMRig puede tener picos cuando envía shares o recibe work
-    if random.random() < 0.2:  # 20% de picos de tráfico
-        bytes_sent = np.random.normal(30000, 10000)
-        bytes_recv = np.random.normal(50000, 15000)
-    elif random.random() < 0.1:  # 10% de tráfico muy bajo (esperando work)
-        bytes_sent = max(0, int(np.random.normal(2000, 1000)))
-        bytes_recv = max(0, int(np.random.normal(5000, 2000)))
-    else:  # 70% tráfico normal
-        bytes_sent = np.random.normal(15000, 8000)
-        bytes_recv = np.random.normal(25000, 12000)
+    # Tráfico de red: XMRig mantiene comunicación constante con el pool
+    # Tráfico típico: moderado-alto, con picos cuando envía shares
+    if random.random() < 0.25:  # 25% de picos de tráfico (enviando shares)
+        bytes_sent = np.random.normal(45000, 15000)
+        bytes_recv = np.random.normal(60000, 20000)
+    elif random.random() < 0.1:  # 10% de tráfico muy bajo (esperando work, inicio)
+        bytes_sent = max(0, int(np.random.normal(3000, 1500)))
+        bytes_recv = max(0, int(np.random.normal(8000, 3000)))
+    else:  # 65% tráfico normal-alto (comunicación constante con pool)
+        bytes_sent = np.random.normal(25000, 10000)
+        bytes_recv = np.random.normal(40000, 15000)
     
     bytes_sent = max(0, int(bytes_sent))
     bytes_recv = max(0, int(bytes_recv))
     
-    # Cantidad de procesos con variabilidad
-    process_count = random.randint(80, 150)
+    # Cantidad de procesos: puede variar, pero típicamente más procesos cuando hay minería
+    process_count = random.randint(90, 180)
     
     # XMRig detectado (pero ocasionalmente puede no detectarse - casos límite)
-    if random.random() < 0.05:  # 5% de casos donde xmrig no se detecta (proceso oculto, nombre diferente)
+    if random.random() < 0.08:  # 8% de casos donde xmrig no se detecta (proceso oculto, nombre diferente)
         xmrig_detected = 0
     else:
         xmrig_detected = 1
     
-    # Procesos con xmrig usando CPU variable
+    # Procesos con xmrig usando CPU variable (típicamente muy alto)
     if xmrig_detected == 1:
-        xmrig_cpu = random.uniform(65, 98)  # Mayor variabilidad en CPU de xmrig
-        xmrig_mem = random.uniform(0.3, 2.5)  # Mayor variabilidad en RAM
+        # XMRig típicamente usa 70-100% de CPU cuando está activo
+        xmrig_cpu = random.uniform(75, 100)  # Mayor rango, más realista
+        xmrig_mem = random.uniform(0.5, 3.0)  # XMRig puede usar más RAM en algunos casos
         processes = [
             f"xmrig.exe:{xmrig_cpu:.1f}:{xmrig_mem:.1f}",
             f"chrome.exe:{random.uniform(0, 5):.1f}:{random.uniform(0.8, 3):.1f}",
