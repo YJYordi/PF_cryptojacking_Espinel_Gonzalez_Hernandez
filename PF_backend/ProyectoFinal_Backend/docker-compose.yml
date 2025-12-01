@@ -44,10 +44,13 @@ services:
     environment:
       - BACKEND_URL=http://app:8080
       - EVE_JSON_PATH=${EVE_JSON_PATH:-/var/log/suricata/eve.json}
+      - SURICATA_RULES_FILE=${SURICATA_RULES_FILE:-/var/log/suricata/rules/generated.rules}
       - INTERVAL_SECONDS=${ML_INTERVAL_SECONDS:-10}
     volumes:
       # Volumen para compartir eve.json con Suricata y el backend
       - suricata_logs:/var/log/suricata
+      # Volumen para compartir reglas con Suricata (si Suricata está en otro contenedor)
+      - suricata_rules:/var/log/suricata/rules
       # Montar modelos desde el host (los modelos entrenados deben estar aquí)
       - ../../modelo_ML/models:/app/models:ro
       # Montar dataset desde el host (opcional, para referencia)
@@ -63,6 +66,7 @@ services:
 volumes:
   postgres_data:
   suricata_logs:
+  suricata_rules:
   ml_models:
   ml_data:
   ml_rules:

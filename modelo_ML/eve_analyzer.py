@@ -35,16 +35,19 @@ class EVEAnalyzer:
     
     SUSPICIOUS_PORTS = [3333, 4444, 5555, 8080, 8888, 9999, 14444, 14433]
     
-    def __init__(self, base_sid: int = 2000000):
+    def __init__(self, base_sid: int = 2000000, max_rules: int = 10):
         """
         Inicializa el analizador.
         
         Args:
             base_sid: SID base para las reglas generadas (default: 2000000)
+            max_rules: Número máximo de reglas a generar por análisis (default: 10)
         """
         self.base_sid = base_sid
         self.rule_counter = 0
+        self.max_rules = max_rules
         self.generated_rules: List[Dict[str, Any]] = []
+        self.seen_patterns: Set[str] = set()  # Para evitar duplicados
     
     def analyze_events(self, events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
@@ -71,15 +74,32 @@ class EVEAnalyzer:
         print(f"      📊 Analizando {len(events)} eventos...")
         print(f"      📋 Tipos de eventos: {', '.join(events_by_type.keys())}")
         
+        # Resetear patrones vistos para este análisis
+        self.seen_patterns.clear()
+        
         # Analizar diferentes tipos de eventos
         self._analyze_http_events(events_by_type.get('http', []))
-        self._analyze_flow_events(events_by_type.get('flow', []))
-        self._analyze_dns_events(events_by_type.get('dns', []))
-        self._analyze_tls_events(events_by_type.get('tls', []))
+        
+        # Solo continuar si no hemos alcanzado el límite
+        if len(self.generated_rules) < self.max_rules:
+            self._analyze_flow_events(events_by_type.get('flow', []))
+        
+        if len(self.generated_rules) < self.max_rules:
+            self._analyze_dns_events(events_by_type.get('dns', []))
+        
+        if len(self.generated_rules) < self.max_rules:
+            self._analyze_tls_events(events_by_type.get('tls', []))
+        
         self._analyze_alert_events(events_by_type.get('alert', []))
         
-        # Analizar patrones cruzados
-        self._analyze_cross_patterns(events)
+        # Analizar patrones cruzados solo si no hemos alcanzado el límite
+        if len(self.generated_rules) < self.max_rules:
+            self._analyze_cross_patterns(events)
+        
+        # Limitar el número de reglas
+        if len(self.generated_rules) > self.max_rules:
+            print(f"      ⚠️  Límite alcanzado: se generaron {len(self.generated_rules)} reglas, limitando a {self.max_rules}")
+            self.generated_rules = self.generated_rules[:self.max_rules]
         
         print(f"      ✅ Reglas generadas: {len(self.generated_rules)}")
         return self.generated_rules
@@ -107,26 +127,41 @@ class EVEAnalyzer:
             if user_agent:
                 user_agents[user_agent.lower()] += 1
         
-        # Detectar pools de minería por hostname
+        # Detectar pools de minería por hostname (solo uno por hostname único)
         for hostname, events_list in hostname_patterns.items():
+            if len(self.generated_rules) >= self.max_rules:
+                break
             if self._is_mining_pool(hostname):
-                rule = self._create_mining_pool_rule(hostname, events_list)
-                if rule:
-                    self.generated_rules.append(rule)
+                pattern_key = f"pool:{hostname}"
+                if pattern_key not in self.seen_patterns:
+                    rule = self._create_mining_pool_rule(hostname, events_list)
+                    if rule:
+                        self.generated_rules.append(rule)
+                        self.seen_patterns.add(pattern_key)
         
-        # Detectar user agents de mineros
+        # Detectar user agents de mineros (solo uno por user agent único)
         for user_agent, count in user_agents.items():
+            if len(self.generated_rules) >= self.max_rules:
+                break
             if self._is_mining_user_agent(user_agent):
-                rule = self._create_mining_user_agent_rule(user_agent, count)
-                if rule:
-                    self.generated_rules.append(rule)
+                pattern_key = f"ua:{user_agent.lower()}"
+                if pattern_key not in self.seen_patterns:
+                    rule = self._create_mining_user_agent_rule(user_agent, count)
+                    if rule:
+                        self.generated_rules.append(rule)
+                        self.seen_patterns.add(pattern_key)
         
-        # Detectar URLs sospechosas de minería
+        # Detectar URLs sospechosas de minería (solo una por URL única)
         for url, events_list in url_patterns.items():
+            if len(self.generated_rules) >= self.max_rules:
+                break
             if self._is_mining_path(url):
-                rule = self._create_mining_path_rule(url, events_list)
-                if rule:
-                    self.generated_rules.append(rule)
+                pattern_key = f"url:{url}"
+                if pattern_key not in self.seen_patterns:
+                    rule = self._create_mining_path_rule(url, events_list)
+                    if rule:
+                        self.generated_rules.append(rule)
+                        self.seen_patterns.add(pattern_key)
     
     def _analyze_flow_events(self, flow_events: List[Dict[str, Any]]) -> None:
         """Analiza eventos de flujo y genera reglas para tráfico sospechoso."""
@@ -134,26 +169,43 @@ class EVEAnalyzer:
             return
         
         # Detectar flujos con alto volumen de datos (posible minería)
+        # Agrupar por IP:puerto para evitar duplicados
+        high_volume_patterns = {}
         for event in flow_events:
+            if len(self.generated_rules) >= self.max_rules:
+                break
             flow_data = event.get('flow', {})
             bytes_toserver = flow_data.get('bytes_toserver', 0)
             bytes_toclient = flow_data.get('bytes_toclient', 0)
             total_bytes = bytes_toserver + bytes_toclient
             
             # Si hay mucho tráfico a un puerto sospechoso
+            dest_ip = event.get('dest_ip', '')
             dest_port = event.get('dest_port', 0)
             if total_bytes > 100000 and dest_port in self.SUSPICIOUS_PORTS:
-                rule = self._create_high_volume_rule(event, total_bytes)
-                if rule:
-                    self.generated_rules.append(rule)
+                pattern_key = f"flow:{dest_ip}:{dest_port}"
+                if pattern_key not in self.seen_patterns and pattern_key not in high_volume_patterns:
+                    high_volume_patterns[pattern_key] = (event, total_bytes)
+        
+        # Crear reglas solo para patrones únicos
+        for pattern_key, (event, total_bytes) in high_volume_patterns.items():
+            if len(self.generated_rules) >= self.max_rules:
+                break
+            rule = self._create_high_volume_rule(event, total_bytes)
+            if rule:
+                self.generated_rules.append(rule)
+                self.seen_patterns.add(pattern_key)
     
     def _analyze_dns_events(self, dns_events: List[Dict[str, Any]]) -> None:
         """Analiza eventos DNS y genera reglas para dominios sospechosos."""
         if not dns_events:
             return
         
-        # Detectar consultas DNS a pools de minería
+        # Detectar consultas DNS a pools de minería (solo una por dominio único)
+        seen_domains = set()
         for event in dns_events:
+            if len(self.generated_rules) >= self.max_rules:
+                break
             dns_data = event.get('dns', {})
             rrtype = dns_data.get('rrtype', '')
             
@@ -161,25 +213,34 @@ class EVEAnalyzer:
                 answers = dns_data.get('answers', [])
                 for answer in answers:
                     rdata = answer.get('rdata', '')
-                    if self._is_mining_pool(rdata):
-                        rule = self._create_dns_mining_rule(event, rdata)
-                        if rule:
-                            self.generated_rules.append(rule)
+                    if self._is_mining_pool(rdata) and rdata not in seen_domains:
+                        pattern_key = f"dns:{rdata}"
+                        if pattern_key not in self.seen_patterns:
+                            rule = self._create_dns_mining_rule(event, rdata)
+                            if rule:
+                                self.generated_rules.append(rule)
+                                self.seen_patterns.add(pattern_key)
+                                seen_domains.add(rdata)
     
     def _analyze_tls_events(self, tls_events: List[Dict[str, Any]]) -> None:
         """Analiza eventos TLS y genera reglas para SNI sospechosos."""
         if not tls_events:
             return
         
-        # Detectar SNI (Server Name Indication) de pools de minería
+        # Detectar SNI (Server Name Indication) de pools de minería (solo uno por SNI único)
         for event in tls_events:
+            if len(self.generated_rules) >= self.max_rules:
+                break
             tls_data = event.get('tls', {})
             sni = tls_data.get('sni', '')
             
             if sni and self._is_mining_pool(sni):
-                rule = self._create_tls_mining_rule(event, sni)
-                if rule:
-                    self.generated_rules.append(rule)
+                pattern_key = f"tls:{sni}"
+                if pattern_key not in self.seen_patterns:
+                    rule = self._create_tls_mining_rule(event, sni)
+                    if rule:
+                        self.generated_rules.append(rule)
+                        self.seen_patterns.add(pattern_key)
     
     def _analyze_alert_events(self, alert_events: List[Dict[str, Any]]) -> None:
         """Analiza eventos de alerta existentes para evitar duplicados."""
@@ -201,12 +262,17 @@ class EVEAnalyzer:
                 ip_connections[dest_ip] += 1
                 ip_ports[dest_ip].add(dest_port)
         
-        # Si hay muchas conexiones a la misma IP en puertos sospechosos
+        # Si hay muchas conexiones a la misma IP en puertos sospechosos (solo una por IP única)
         for ip, count in ip_connections.items():
+            if len(self.generated_rules) >= self.max_rules:
+                break
             if count > 10 and any(p in self.SUSPICIOUS_PORTS for p in ip_ports[ip]):
-                rule = self._create_suspicious_ip_rule(ip, count, ip_ports[ip])
-                if rule:
-                    self.generated_rules.append(rule)
+                pattern_key = f"suspicious:{ip}"
+                if pattern_key not in self.seen_patterns:
+                    rule = self._create_suspicious_ip_rule(ip, count, ip_ports[ip])
+                    if rule:
+                        self.generated_rules.append(rule)
+                        self.seen_patterns.add(pattern_key)
     
     def _is_mining_pool(self, hostname: str) -> bool:
         """Verifica si un hostname es un pool de minería conocido."""

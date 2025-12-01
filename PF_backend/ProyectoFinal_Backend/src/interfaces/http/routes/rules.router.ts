@@ -66,5 +66,36 @@ router.patch("/:id/toggle", async (req, res) => {
   });
 });
 
+// Eliminar reglas generadas automáticamente (con tag 'auto-generated')
+router.delete("/auto-generated", async (_req, res) => {
+  try {
+    const result = await prisma.rule.deleteMany({
+      where: {
+        tags: {
+          has: 'auto-generated'
+        }
+      }
+    });
+    res.json({ 
+      ok: true, 
+      deleted: result.count,
+      message: `Se eliminaron ${result.count} reglas generadas automáticamente`
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Error al eliminar reglas", details: String(error) });
+  }
+});
+
+// Eliminar una regla específica por ID
+router.delete("/:id", async (req, res) => {
+  const { id } = req.params;
+  try {
+    await prisma.rule.delete({ where: { id } });
+    res.json({ ok: true, message: "Regla eliminada exitosamente" });
+  } catch (error) {
+    res.status(404).json({ error: "Regla no encontrada" });
+  }
+});
+
 export default router;
 

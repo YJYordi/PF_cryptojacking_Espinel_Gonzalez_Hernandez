@@ -50,11 +50,13 @@ echo "=========================================="
 # Construir comando con variables de entorno
 BACKEND_URL=${BACKEND_URL:-http://app:8080}
 EVE_JSON_PATH=${EVE_JSON_PATH:-/var/log/suricata/eve.json}
+SURICATA_RULES_FILE=${SURICATA_RULES_FILE:-/var/log/suricata/rules/generated.rules}
 INTERVAL_SECONDS=${INTERVAL_SECONDS:-10}
 
 # Ejecutar pipeline con parámetros
 exec python pipeline_monitor.py \
     --backend-url "${BACKEND_URL}" \
     --eve-json "${EVE_JSON_PATH}" \
+    --suricata-rules-file "${SURICATA_RULES_FILE}" \
     --interval "${INTERVAL_SECONDS}"
 

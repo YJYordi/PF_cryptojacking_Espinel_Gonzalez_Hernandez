@@ -11,6 +11,8 @@ import json
 import argparse
 import re
 import requests
+import subprocess
+import signal
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 
@@ -35,6 +37,7 @@ except ImportError:
 # Configuración
 DEFAULT_EVE_JSON = "/var/log/suricata/eve.json"
 DEFAULT_RULES_FILE = "rules/custom_rules.rules"
+DEFAULT_SURICATA_RULES_FILE = "/var/log/suricata/rules/generated.rules"
 DEFAULT_BACKEND_URL = "http://localhost:8080"
 INTERVAL_SECONDS = 10  # Intervalo de monitoreo en segundos
 
@@ -46,6 +49,7 @@ class PipelineMonitor:
         self,
         eve_json_path: str = DEFAULT_EVE_JSON,
         rules_file: str = DEFAULT_RULES_FILE,
+        suricata_rules_file: str = DEFAULT_SURICATA_RULES_FILE,
         interval: int = INTERVAL_SECONDS,
         backend_url: str = DEFAULT_BACKEND_URL
     ):
@@ -54,12 +58,15 @@ class PipelineMonitor:
         
         Args:
             eve_json_path: Ruta al archivo eve.json de Suricata
-            rules_file: Archivo donde guardar las reglas generadas
+            rules_file: Archivo donde guardar las reglas generadas (backup)
+            suricata_rules_file: Archivo de reglas de Suricata donde se escribirán las reglas
             interval: Intervalo de monitoreo en segundos
             backend_url: URL base del backend (ej: http://localhost:8080)
         """
         self.eve_json_path = eve_json_path
         self.rules_file = rules_file
+        # Usar variable de entorno si está disponible, sino usar el parámetro
+        self.suricata_rules_file = os.getenv('SURICATA_RULES_FILE', suricata_rules_file)
         self.interval = interval
         self.backend_url = backend_url.rstrip('/')
         
@@ -522,13 +529,140 @@ class PipelineMonitor:
         print(f"[INFO] {success_count}/{len(parsed_rules)} reglas enviadas exitosamente al backend")
         return success_count
     
+    def save_rules_to_suricata_file(self, rules: str) -> None:
+        """
+        Guarda las reglas generadas en el archivo de reglas de Suricata.
+        
+        Args:
+            rules: Contenido de las reglas (texto)
+        """
+        if not rules or not rules.strip():
+            return
+        
+        # Crear directorio si no existe
+        rules_dir = os.path.dirname(self.suricata_rules_file)
+        if rules_dir and not os.path.exists(rules_dir):
+            try:
+                os.makedirs(rules_dir, exist_ok=True)
+                print(f"      📁 Directorio creado: {rules_dir}")
+            except Exception as e:
+                print(f"      ⚠️  WARNING: No se pudo crear directorio {rules_dir}: {e}")
+                print(f"      💡 Las reglas se guardarán solo en el backup")
+                return
+        
+        try:
+            # Extraer solo las reglas (sin comentarios de encabezado)
+            rule_lines = []
+            for line in rules.split('\n'):
+                line = line.strip()
+                # Incluir solo líneas que son reglas (alert, drop, etc.) o comentarios útiles
+                if line and (line.startswith('alert') or line.startswith('drop') or 
+                            line.startswith('pass') or (line.startswith('#') and 'regla' in line.lower())):
+                    rule_lines.append(line)
+            
+            if not rule_lines:
+                print(f"      ⚠️  WARNING: No se encontraron reglas válidas para guardar")
+                return
+            
+            # Agregar las reglas al archivo de Suricata
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            with open(self.suricata_rules_file, 'a', encoding='utf-8') as f:
+                f.write(f"\n# Reglas generadas automáticamente - {timestamp}\n")
+                f.write(f"# Detección #{self.detection_count}\n")
+                f.write("\n".join(rule_lines))
+                f.write("\n\n")
+            
+            print(f"[INFO] ✅ Reglas agregadas a {self.suricata_rules_file}")
+            
+            # Recargar reglas en Suricata automáticamente
+            self._reload_suricata_rules()
+        
+        except PermissionError:
+            print(f"      ❌ ERROR: Sin permisos para escribir en {self.suricata_rules_file}")
+            print(f"      💡 Verifica permisos del archivo/directorio")
+        except Exception as e:
+            print(f"      ❌ ERROR al guardar reglas en Suricata: {e}")
+    
+    def _reload_suricata_rules(self) -> None:
+        """
+        Intenta recargar las reglas en Suricata automáticamente.
+        Prueba múltiples métodos para asegurar que funcione.
+        """
+        print(f"      🔄 Recargando reglas en Suricata...")
+        
+        # Método 1: Intentar con suricatactl
+        try:
+            result = subprocess.run(
+                ['suricatactl', 'reload-rules'],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=True
+            )
+            print(f"      ✅ Reglas recargadas exitosamente con suricatactl")
+            if result.stdout:
+                print(f"      📋 Output: {result.stdout.strip()}")
+            return
+        except FileNotFoundError:
+            print(f"      ⚠️  suricatactl no encontrado, intentando método alternativo...")
+        except subprocess.TimeoutExpired:
+            print(f"      ⚠️  Timeout al recargar reglas, intentando método alternativo...")
+        except subprocess.CalledProcessError as e:
+            print(f"      ⚠️  Error con suricatactl: {e.stderr.strip() if e.stderr else 'unknown error'}")
+            print(f"      ⚠️  Intentando método alternativo...")
+        except Exception as e:
+            print(f"      ⚠️  Error inesperado: {e}")
+        
+        # Método 2: Intentar enviar señal SIGHUP al proceso de Suricata
+        try:
+            # Buscar proceso de Suricata
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                try:
+                    if proc.info['name'] and 'suricata' in proc.info['name'].lower():
+                        pid = proc.info['pid']
+                        os.kill(pid, signal.SIGHUP)
+                        print(f"      ✅ Señal SIGHUP enviada a Suricata (PID: {pid})")
+                        print(f"      ✅ Reglas recargadas exitosamente")
+                        return
+                except (psutil.NoSuchProcess, psutil.AccessDenied, ProcessLookupError):
+                    continue
+        except Exception as e:
+            print(f"      ⚠️  No se pudo enviar señal SIGHUP: {e}")
+        
+        # Método 3: Intentar con systemctl si está disponible
+        try:
+            result = subprocess.run(
+                ['systemctl', 'reload', 'suricata'],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=True
+            )
+            print(f"      ✅ Reglas recargadas exitosamente con systemctl")
+            return
+        except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            pass
+        except Exception:
+            pass
+        
+        # Si todos los métodos fallan, informar al usuario
+        print(f"      ⚠️  WARNING: No se pudo recargar Suricata automáticamente")
+        print(f"      💡 Las reglas están guardadas pero Suricata necesita recargarlas manualmente")
+        print(f"      💡 Opciones:")
+        print(f"         1. Ejecutar: suricatactl reload-rules")
+        print(f"         2. Reiniciar Suricata: systemctl restart suricata")
+        print(f"         3. Enviar señal: kill -HUP <PID_de_Suricata>")
+    
     def save_rules_to_file(self, rules: str) -> None:
         """
         Guarda las reglas generadas en el archivo (backup).
         
         Args:
-            rules: Contenido de las reglas
+            rules: Contenido de las reglas (texto)
         """
+        if not rules or not rules.strip():
+            return
+        
         rules_dir = os.path.dirname(self.rules_file)
         if rules_dir and not os.path.exists(rules_dir):
             os.makedirs(rules_dir, exist_ok=True)
@@ -646,14 +780,19 @@ class PipelineMonitor:
         
         print(f"      ✅ Reglas generadas: {len(parsed_rules)} reglas listas para enviar")
         
-        # Guardar en archivo (backup)
-        print(f"\n[3.4] 💾 Guardando reglas en archivo (backup)...")
+        # Guardar en archivo de Suricata (para que Suricata las use)
+        print(f"\n[3.4] 💾 Guardando reglas en archivo de Suricata...")
         rules_text = self.eve_analyzer.get_rules_text()
+        self.save_rules_to_suricata_file(rules_text)
+        print(f"      ✅ Reglas guardadas en: {self.suricata_rules_file}")
+        
+        # Guardar en archivo (backup)
+        print(f"\n[3.5] 💾 Guardando reglas en archivo (backup)...")
         self.save_rules_to_file(rules_text)
         print(f"      ✅ Reglas guardadas en: {self.rules_file}")
         
         # Enviar al backend
-        print(f"\n[3.5] 📤 Enviando reglas al backend...")
+        print(f"\n[3.6] 📤 Enviando reglas al backend...")
         print(f"      URL: {self.backend_url}/rulesets/rules")
         success_count = self.send_rules_to_backend(parsed_rules)
         
@@ -676,7 +815,8 @@ class PipelineMonitor:
         print("=" * 60)
         print(f"[INFO] Intervalo de monitoreo: {self.interval} segundos")
         print(f"[INFO] Archivo eve.json: {self.eve_json_path}")
-        print(f"[INFO] Archivo de reglas: {self.rules_file}")
+        print(f"[INFO] Archivo de reglas (backup): {self.rules_file}")
+        print(f"[INFO] Archivo de reglas de Suricata: {self.suricata_rules_file}")
         print("[INFO] Presiona Ctrl+C para detener")
         print("=" * 60)
         
@@ -752,7 +892,14 @@ def main():
         '--rules-file',
         type=str,
         default=DEFAULT_RULES_FILE,
-        help=f'Archivo donde guardar las reglas (default: {DEFAULT_RULES_FILE})'
+        help=f'Archivo donde guardar las reglas (backup) (default: {DEFAULT_RULES_FILE})'
+    )
+    
+    parser.add_argument(
+        '--suricata-rules-file',
+        type=str,
+        default=DEFAULT_SURICATA_RULES_FILE,
+        help=f'Archivo de reglas de Suricata donde escribir las reglas (default: {DEFAULT_SURICATA_RULES_FILE})'
     )
     
     parser.add_argument(
@@ -775,6 +922,7 @@ def main():
     monitor = PipelineMonitor(
         eve_json_path=args.eve_json,
         rules_file=args.rules_file,
+        suricata_rules_file=args.suricata_rules_file,
         interval=args.interval,
         backend_url=args.backend_url
     )
