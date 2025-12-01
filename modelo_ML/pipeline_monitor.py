@@ -144,10 +144,8 @@ class PipelineMonitor:
             event_types = ['alert', 'dns', 'http', 'tls', 'flow']
         
         if not os.path.exists(self.eve_json_path):
-            print(f"[WARNING] El archivo {self.eve_json_path} no existe.")
+            print(f"      ⚠️  WARNING: El archivo {self.eve_json_path} no existe.")
             return []
-        
-        print(f"[INFO] Leyendo eventos de {self.eve_json_path}...")
         
         filtered_events = []
         
@@ -159,28 +157,42 @@ class PipelineMonitor:
                     events = json.load(f)
                     if not isinstance(events, list):
                         events = [events]
+                    print(f"      📄 Formato: JSON array ({len(events)} eventos)")
                 except json.JSONDecodeError:
                     # Si falla, intentar como JSONL (una línea por evento)
                     f.seek(0)
                     events = []
-                    for line in f:
+                    for line_num, line in enumerate(f, 1):
                         line = line.strip()
                         if line:
                             try:
                                 events.append(json.loads(line))
                             except json.JSONDecodeError:
                                 continue
+                    print(f"      📄 Formato: JSONL (JSON Lines) - {len(events)} eventos leídos")
+            
+            print(f"      📊 Total de eventos en archivo: {len(events)}")
+            print(f"      🔍 Filtrando por tipos: {', '.join(event_types)}")
             
             # Filtrar eventos por tipo
+            event_type_counts = {}
             for event in events:
-                event_type = event.get('event_type') or event.get('event_type')
+                event_type = event.get('event_type', 'unknown')
+                event_type_counts[event_type] = event_type_counts.get(event_type, 0) + 1
                 if event_type in event_types:
                     filtered_events.append(event)
             
-            print(f"[INFO] Eventos filtrados: {len(filtered_events)} de {len(events)} totales")
+            print(f"      📈 Distribución de eventos:")
+            for ev_type, count in sorted(event_type_counts.items()):
+                marker = "✅" if ev_type in event_types else "  "
+                print(f"         {marker} {ev_type}: {count}")
+            
+            print(f"      ✅ Eventos filtrados: {len(filtered_events)} de {len(events)} totales")
             
         except Exception as e:
-            print(f"[ERROR] Error al leer/filtrar eventos: {e}")
+            print(f"      ❌ ERROR al leer/filtrar eventos: {e}")
+            import traceback
+            print(f"      📋 Traceback: {traceback.format_exc()}")
             return []
         
         return filtered_events
@@ -482,64 +494,90 @@ Contenido del archivo JSON a analizar:
         self.last_detection_time = datetime.now()
         
         print(f"\n{'='*60}")
-        print(f"[ALERTA] ⚠️  Minería sospechosa detectada por ML (#{self.detection_count})")
+        print(f"[ALERTA] ⚠️  MINERÍA SOSPECHOSA DETECTADA POR ML (#{self.detection_count})")
         print(f"[INFO] Timestamp: {self.last_detection_time.isoformat()}")
         print(f"{'='*60}")
         
         # PASO CRÍTICO: Verificar si Suricata ya detectó esta amenaza
-        print(f"\n[VERIFICACIÓN] Comprobando si Suricata ya tiene alertas para esta amenaza...")
+        print(f"\n[3.1] 🔍 Verificando si Suricata ya tiene alertas para esta amenaza...")
+        print(f"      Buscando alertas en los últimos 120 segundos...")
         suricata_has_alert = self.check_suricata_alerts(time_window_seconds=120)
         
         if suricata_has_alert:
-            print(f"[INFO] ✅ Suricata ya tiene alertas activas para esta amenaza")
-            print(f"[INFO] No es necesario crear reglas nuevas (Suricata ya está cubriendo)")
-            print(f"[INFO] El modelo ML complementó la detección, pero Suricata ya la detectó")
+            print(f"      ✅ RESULTADO: Suricata YA tiene alertas activas")
+            print(f"      📋 Acción: No se generarán reglas nuevas (Suricata ya está cubriendo)")
+            print(f"      ℹ️  El modelo ML complementó la detección, pero Suricata ya la detectó")
             return
         
-        print(f"[INFO] ⚠️  Suricata NO tiene alertas para esta amenaza")
-        print(f"[INFO] Generando reglas automáticas para optimizar detección de Suricata...")
-        print(f"{'='*60}")
+        print(f"      ⚠️  RESULTADO: Suricata NO tiene alertas para esta amenaza")
+        print(f"      📋 Acción: Proceder a generar reglas automáticas...")
         
-        # 1. Filtrar eventos de Suricata
-        print(f"\n[PASO 1/5] Leyendo y filtrando eventos de {self.eve_json_path}...")
-        events = self.filter_suricata_events()
+        # Leer y filtrar eventos de Suricata
+        print(f"\n[3.2] 📂 Leyendo eventos de eve.json...")
+        print(f"      Ruta: {self.eve_json_path}")
+        
+        if not os.path.exists(self.eve_json_path):
+            print(f"      ❌ ERROR: El archivo eve.json no existe")
+            print(f"      📋 Acción: Los eventos del ingest se escribirán automáticamente aquí")
+            print(f"      💡 Sugerencia: Envía eventos por /ingest/eve primero")
+            return
+        
+        events = self.filter_suricata_events(['alert', 'dns', 'http', 'tls', 'flow'])
         
         if not events:
-            print("[WARNING] No se encontraron eventos relevantes en eve.json")
-            print("[INFO] El pipeline continuará, pero puede que no haya datos suficientes")
-            events = []
+            print(f"      ⚠️  WARNING: No se encontraron eventos relevantes en eve.json")
+            print(f"      📋 Acción: No se pueden generar reglas sin contexto de tráfico")
+            print(f"      💡 Sugerencia: Envía eventos por /ingest/eve para generar contexto")
+            return
         
-        # 2. Generar reglas con OpenAI
-        print(f"\n[PASO 2/5] Enviando {len(events)} eventos a OpenAI para análisis...")
+        print(f"      ✅ Eventos encontrados: {len(events)} eventos relevantes")
+        print(f"      📊 Tipos de eventos: {', '.join(set(e.get('event_type', 'unknown') for e in events))}")
+        
+        # Generar reglas con OpenAI
+        print(f"\n[3.3] 🤖 Generando reglas con OpenAI...")
+        print(f"      Modelo: {OPENAI_MODEL}")
+        print(f"      Enviando {len(events)} eventos para análisis...")
+        
         rules = self.generate_rules_with_openai(events)
         
         if not rules:
-            print("[ERROR] No se pudieron generar reglas con OpenAI")
-            print("[INFO] Verifica que OPENAI_API_KEY esté configurada correctamente")
+            print(f"      ❌ ERROR: No se pudieron generar reglas")
+            print(f"      💡 Verifica que OPENAI_API_KEY esté configurada")
             return
         
-        # 3. Guardar reglas en archivo (backup)
-        print(f"\n[PASO 3/5] Guardando reglas en archivo de respaldo...")
-        self.save_rules_to_file(rules)
+        rule_lines = len([l for l in rules.split('\n') if l.strip() and not l.strip().startswith('#')])
+        print(f"      ✅ Reglas generadas: {rule_lines} reglas")
         
-        # 4. Parsear reglas
-        print(f"\n[PASO 4/5] Parseando reglas generadas...")
+        # Parsear reglas
+        print(f"\n[3.4] 📝 Parseando reglas...")
         parsed_rules = self.parse_suricata_rules(rules)
+        print(f"      ✅ Reglas parseadas: {len(parsed_rules)} reglas listas para enviar")
+        for i, rule in enumerate(parsed_rules[:3], 1):  # Mostrar primeras 3
+            print(f"         {i}. {rule.get('name', 'Sin nombre')} (SID: {rule.get('sid', 'N/A')})")
+        if len(parsed_rules) > 3:
+            print(f"         ... y {len(parsed_rules) - 3} más")
         
-        if not parsed_rules:
-            print("[WARNING] No se pudieron parsear reglas para enviar al backend")
-            return
+        # Guardar en archivo (backup)
+        print(f"\n[3.5] 💾 Guardando reglas en archivo (backup)...")
+        self.save_rules_to_file(rules)
+        print(f"      ✅ Reglas guardadas en: {self.rules_file}")
         
-        # 5. Enviar reglas al backend (aparecerán en Dashboard)
-        print(f"\n[PASO 5/5] Enviando {len(parsed_rules)} reglas al backend...")
+        # Enviar al backend
+        print(f"\n[3.6] 📤 Enviando reglas al backend...")
+        print(f"      URL: {self.backend_url}/rulesets/rules")
         success_count = self.send_rules_to_backend(parsed_rules)
         
-        print(f"\n{'='*60}")
-        print(f"[INFO] ✅ Pipeline completado exitosamente!")
-        print(f"[INFO] Reglas enviadas al backend: {success_count}/{len(parsed_rules)}")
-        print(f"[INFO] Las reglas ahora están disponibles en el Dashboard")
-        print(f"[INFO] Estas reglas ayudarán a Suricata a detectar amenazas similares en el futuro")
-        print(f"{'='*60}\n")
+        if success_count > 0:
+            print(f"\n{'='*60}")
+            print(f"[SUCCESS] ✅ {success_count}/{len(parsed_rules)} reglas enviadas exitosamente")
+            print(f"[INFO] 📊 Las reglas deberían aparecer en el Dashboard:")
+            print(f"      http://localhost:8080/rules")
+            print(f"{'='*60}")
+        else:
+            print(f"\n{'='*60}")
+            print(f"[ERROR] ❌ No se pudieron enviar reglas al backend")
+            print(f"      💡 Verifica que el backend esté corriendo en {self.backend_url}")
+            print(f"{'='*60}")
     
     def run(self) -> None:
         """Ejecuta el pipeline de monitoreo continuo."""
@@ -553,24 +591,50 @@ Contenido del archivo JSON a analizar:
         print("=" * 60)
         
         try:
+            cycle_count = 0
             while True:
+                cycle_count += 1
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                
+                print(f"\n{'='*60}")
+                print(f"[CICLO #{cycle_count}] {timestamp}")
+                print(f"{'='*60}")
+                
                 # 1. Recolectar métricas
+                print("[PASO 1/5] 📊 Recolectando métricas del sistema...")
                 metrics = self.collect_system_metrics()
+                print(f"  ✅ Métricas recolectadas:")
+                print(f"     - CPU: {metrics['cpu_percent']:.2f}%")
+                print(f"     - RAM: {metrics['ram_percent']:.2f}%")
+                print(f"     - Red enviado: {metrics['bytes_sent']:,} bytes")
+                print(f"     - Red recibido: {metrics['bytes_recv']:,} bytes")
+                print(f"     - Procesos: {metrics['process_count']}")
+                print(f"     - XMRig detectado: {'Sí' if metrics['xmrig_detected'] else 'No'}")
                 
                 # 2. Clasificar estado
+                print(f"[PASO 2/5] 🤖 Clasificando con modelo ML...")
                 result = self.classify_state(metrics)
+                print(f"  ✅ Clasificación completada:")
+                print(f"     - Estado predicho: {result['state'].upper()}")
+                print(f"     - Probabilidad: {result['probability']:.4f} ({result['probability']*100:.2f}%)")
+                print(f"     - Clase: {result['prediction']} ({'Minería' if result['prediction'] == 1 else 'Normal'})")
                 
-                # 3. Mostrar resultado
-                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                print(f"\n[{timestamp}] Estado: {result['state'].upper()}")
-                print(f"  Probabilidad: {result['probability']:.4f} ({result['probability']*100:.2f}%)")
-                print(f"  CPU: {metrics['cpu_percent']:.2f}% | RAM: {metrics['ram_percent']:.2f}%")
-                
-                # 4. Si detecta minería sospechosa, generar reglas
+                # 3. Verificar si hay detección
                 if result['state'] == "mineria_sospechosa":
+                    print(f"[PASO 3/5] ⚠️  MINERÍA SOSPECHOSA DETECTADA")
+                    print(f"  🔍 Iniciando proceso de generación de reglas...")
                     self.handle_mining_detection()
+                else:
+                    print(f"[PASO 3/5] ✅ Estado normal - No se requiere acción")
+                
+                # 4. Resumen del ciclo
+                print(f"[PASO 4/5] 📝 Resumen del ciclo:")
+                print(f"     - Total detecciones hasta ahora: {self.detection_count}")
+                if self.last_detection_time:
+                    print(f"     - Última detección: {self.last_detection_time.strftime('%Y-%m-%d %H:%M:%S')}")
                 
                 # 5. Esperar intervalo
+                print(f"[PASO 5/5] ⏳ Esperando {self.interval} segundos hasta el próximo ciclo...")
                 time.sleep(self.interval)
         
         except KeyboardInterrupt:
