@@ -34,8 +34,8 @@ services:
 
   ml-pipeline:
     build:
-      context: ../..
-      dockerfile: modelo_ML/Dockerfile
+      context: ../../modelo_ML
+      dockerfile: Dockerfile
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - BACKEND_URL=http://app:8080
