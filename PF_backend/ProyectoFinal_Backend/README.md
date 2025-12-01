@@ -21,10 +21,26 @@ sudo dpkg -i nats-0.1.5-amd64.deb
 1) npm i
 2) docker compose up -d db nats
 3) cp .env.example .env
-4) npx prisma generate
-5) npx prisma migrate dev --name init
-6) docker compose up --build
-7)  nats sub eve.suricata (en otra termianl)
+4) Agregar OPENAI_API_KEY al .env (para el pipeline ML)
+5) npx prisma generate
+6) npx prisma migrate dev --name init
+7) docker compose up --build
+8) nats sub eve.suricata (en otra terminal)
+
+### Nota sobre el Pipeline ML
+
+El servicio `ml-pipeline` se inicia automáticamente con `docker compose up --build`.
+
+**Requisitos previos:**
+- Modelos entrenados en `modelo_ML/models/` (rf_model.pkl, scaler.pkl)
+- Variable `OPENAI_API_KEY` en el archivo `.env`
+
+**Si no tienes modelos entrenados:**
+```bash
+cd ../../modelo_ML
+python scripts/generate_synthetic_dataset.py
+python train_model.py
+```
 
 ## Pruebas
 hacerlo en una terminal aparte (revisar la terminal en donde esta ejecutando el nats para saber que si se cargaron)
